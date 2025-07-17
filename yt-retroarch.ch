@@ -6,58 +6,64 @@
 # Script em bash baseado na aplicação de python yt-dlp https://github.com/yt-dlp/yt-dlp
 
 
-# Verifica se foi passada uma URL
+# Verifica argumentos
 if [ $# -eq 0 ]; then
-    echo "Erro: Por favor, forneça a URL do vídeo do YouTube."
-    echo "Uso: $0 <URL>"
+    echo "Erro: URL do YouTube não fornecida."
+    echo "Uso: $0 <URL> [output_directory]"
     exit 1
 fi
 
 URL="$1"
-OUTPUT_DIR="${HOME}/Vídeos/RetroArch"
+OUTPUT_DIR="${2:-$HOME/Vídeos}"
 MAX_HEIGHT=480
-MAX_FPS=30
 
-# Cria diretório de saída se necessário
+# Obtém o título seguro para nome de arquivo
+SAFE_TITLE=$(./yt-dlp --get-title "$URL" | 
+             sed -e 's/[\\/*?$!#&%|{}\[\]]/_/g' \
+                 -e 's/[:<>]/_/g' \
+                 -e 's/^[[:space:]]*//' \
+                 -e 's/[[:space:]]*$//' |
+             tr -s '_' |
+             head -c 200)
+
+# Cria diretório de saída
 mkdir -p "$OUTPUT_DIR"
 
-# Mostra spinner simples durante o processamento
-show_spinner() {
-    local pid=$1
-    local spin='-\|/'
-    local i=0
-    while kill -0 "$pid" 2>/dev/null; do
-        i=$(( (i+1) %4 ))
-        printf "\rProcessando... ${spin:$i:1}"
-        sleep 0.1
-    done
-    printf "\r               \r" # Limpa a linha
-}
+# Parâmetros de codificação
+VIDEO_ARGS=(
+    -c:v libx264
+    -profile:v baseline
+    -level 3.0
+    -pix_fmt yuv420p
+    -movflags +faststart
+    -tune film
+    -crf 23
+    -maxrate 1500k
+    -bufsize 3000k
+)
 
-# Baixa e converte o vídeo
-(
-    ./yt-dlp -f "bestvideo[height<=$MAX_HEIGHT][fps<=$MAX_FPS]+bestaudio" \
-        --merge-output-format mkv \
-        --recode-video mkv \
-        --postprocessor-args "-c:v libx264 \
-                              -profile:v baseline \
-                              -level 3.0 \
-                              -pix_fmt yuv420p \
-                              -preset fast \
-                              -r $MAX_FPS \
-                              -c:a copy" \
-        -o "${OUTPUT_DIR}/%(title)s.%(ext)s" \
-        "$URL"
-) &> /dev/null & # Executa em segundo plano e silencia a saída
+AUDIO_ARGS=(
+    -c:a aac
+    -b:a 128k
+    -ac 2
+)
 
-# Obtém o PID do processo
-PID=$!
+# Executa o download e conversão
+./yt-dlp -f "bestvideo[height<=$MAX_HEIGHT][ext!=webm]+bestaudio/best" \
+    --no-playlist \
+    --merge-output-format mp4 \
+    --recode-video mp4 \
+    --postprocessor-args "ffmpeg_i1: -vf 'scale=trunc(oh*a/2)*2:min(ih\,$MAX_HEIGHT)' ${VIDEO_ARGS[*]} ${AUDIO_ARGS[*]}" \
+    -o "$OUTPUT_DIR/$SAFE_TITLE.mp4" \
+    --console-title \
+    --no-simulate \
+    "$URL"
 
-# Mostra spinner enquanto o processo estiver ativo
-show_spinner $PID
-
-# Aguarda conclusão
-wait $PID
-
-echo "Download concluído! O vídeo está em:"
-echo "$OUTPUT_DIR"
+# Verifica se a conversão foi bem sucedida
+if [ $? -eq 0 ]; then
+    echo -e "\nConversão concluída com sucesso!"
+    echo "Vídeo salvo em: $OUTPUT_DIR/$SAFE_TITLE.mp4"
+else
+    echo -e "\nErro durante o processo de conversão!"
+    exit 1
+fi
